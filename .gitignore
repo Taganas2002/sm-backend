@@ -31,3 +31,13 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# --- App config with secrets ---
+/src/main/resources/application.properties
+/src/main/resources/application.yml
+/src/main/resources/application-*.properties
+/src/main/resources/application-*.yml
+
+# keep example templates in git
+!src/main/resources/application-example.properties
+!src/main/resources/application-example.yml
