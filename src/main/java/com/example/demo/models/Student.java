@@ -5,6 +5,9 @@ import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import java.time.LocalDate;
 import java.util.Objects;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
+import java.time.OffsetDateTime;
 
 @Entity
 @Table(
@@ -39,6 +42,8 @@ public class Student {
 
   @Column(name = "photo_url", length = 500)
   private String photoUrl;
+  
+  
 
   @Column(name = "dob")
   private LocalDate dob;
@@ -73,6 +78,26 @@ public class Student {
 
   @Column(name = "medical_notes", columnDefinition = "TEXT")
   private String medicalNotes;
+  
+  @Column(name = "created_at") // allow NULL during migration
+  @CreationTimestamp
+  private OffsetDateTime createdAt;
+
+  @Column(name = "updated_at") // allow NULL during migration
+  @UpdateTimestamp
+  private OffsetDateTime updatedAt;
+
+  // optional but safe: if you prefer JPA callbacks, keep these too
+  @PrePersist
+  void _prePersistTimestamps() {
+    if (createdAt == null) createdAt = OffsetDateTime.now();
+    if (updatedAt == null) updatedAt = createdAt;
+  }
+
+  @PreUpdate
+  void _preUpdateTimestamps() {
+    updatedAt = OffsetDateTime.now();
+  }
 
   // -------- Constructors --------
   public Student() { }

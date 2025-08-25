@@ -76,7 +76,7 @@ public class StudyGroupServiceImpl implements StudyGroupService {
       spec = spec.and((root, q, cb) -> cb.equal(root.get("academicYear"), year));
     if (active != null)
       spec = spec.and((root, q, cb) -> cb.equal(root.get("active"), active));
-    return repo.findAll(spec, pageable).map(mapper::toResponse);
+    return repo.findAll(pageable).map(mapper::toResponse);
   }
 
   private void validatePolicy(GroupUpsertRequest r){

@@ -56,6 +56,10 @@ public class StudyGroup {
   @Column(name="absence_stop_threshold") private Integer absenceStopThreshold;
   @Column(name="warn_duplicate_card", nullable=false) private boolean warnDuplicateCard = true;
   @Column(name="allow_multiple_checkins_per_day", nullable=false) private boolean allowMultipleCheckinsPerDay = false;
+  
+//Day-4 additions
+ @Column(name="approval_required", nullable=false)  private boolean approvalRequired = true;
+ @Column(name="auto_close_grace_min", nullable=false) private int autoCloseGraceMin = 10;
 
   @Column(name="start_date") private LocalDate startDate;
   @Lob private String notes;
@@ -102,6 +106,44 @@ public class StudyGroup {
   public void setWarnDuplicateCard(boolean v){ this.warnDuplicateCard = v; }
   public boolean isAllowMultipleCheckinsPerDay(){ return allowMultipleCheckinsPerDay; }
   public void setAllowMultipleCheckinsPerDay(boolean v){ this.allowMultipleCheckinsPerDay = v; }
+  
+//--- day-4 additions (getters/setters) ---
+public boolean isApprovalRequired() {
+ return approvalRequired;
+}
+public void setApprovalRequired(boolean approvalRequired) {
+ this.approvalRequired = approvalRequired;
+}
+
+public int getAutoCloseGraceMin() {
+ return autoCloseGraceMin;
+}
+public void setAutoCloseGraceMin(int autoCloseGraceMin) {
+ this.autoCloseGraceMin = autoCloseGraceMin;
+}
+
+//--- timestamps ---
+public java.time.OffsetDateTime getCreatedAt() {
+ return createdAt;
+}
+public void setCreatedAt(java.time.OffsetDateTime createdAt) {
+ this.createdAt = createdAt;
+}
+
+public java.time.OffsetDateTime getUpdatedAt() {
+ return updatedAt;
+}
+public void setUpdatedAt(java.time.OffsetDateTime updatedAt) {
+ this.updatedAt = updatedAt;
+}
+
+//keep your @PreUpdate touch() and add @PrePersist so values are never null
+@jakarta.persistence.PrePersist
+void onCreate() {
+ if (createdAt == null) createdAt = java.time.OffsetDateTime.now();
+ if (updatedAt == null) updatedAt = createdAt;
+}
+
 
   public LocalDate getStartDate(){ return startDate; } public void setStartDate(LocalDate v){ this.startDate = v; }
   public String getNotes(){ return notes; } public void setNotes(String v){ this.notes = v; }
