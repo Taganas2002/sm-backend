@@ -7,12 +7,22 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
 public interface AttendanceSessionRepo extends JpaRepository<AttendanceSession, Long> {
   Optional<AttendanceSession> findByGroupAndSessionDateAndStartTimeAndEndTime(
       StudyGroup group, LocalDate date, LocalTime start, LocalTime end);
+  
 
   List<AttendanceSession> findByStatusIn(List<SessionStatus> statuses);
+  List<AttendanceSession> findByGroupIdAndSessionDateBetween(Long groupId, LocalDate from, LocalDate to);
+
+  List<AttendanceSession> findByStatusIn(Collection<SessionStatus> statuses);
+  
+//list sessions by group & date range
+ List<AttendanceSession> findByGroupIdAndSessionDateBetweenOrderBySessionDateAscStartTimeAsc(
+     Long groupId, LocalDate from, LocalDate to
+ );
 }

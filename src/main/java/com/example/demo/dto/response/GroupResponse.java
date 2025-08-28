@@ -6,6 +6,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 
 public class GroupResponse {
+  private String name;
   private Long id;
   private Long schoolId;
   private String academicYear;
@@ -13,6 +14,10 @@ public class GroupResponse {
   private Long subjectId;
   private Long levelId;
   private Long sectionId;
+
+  // NEW: classroom fields
+  private Long classroomId;
+  private String classroomName;
 
   private boolean privateGroup;
   private boolean revisionGroup;
@@ -41,6 +46,8 @@ public class GroupResponse {
   private String notes;
 
   // getters/setters (all)
+  public String getName() { return name; }
+  public void setName(String name) { this.name = name; }
   public Long getId(){ return id; } public void setId(Long v){ this.id = v; }
   public Long getSchoolId(){ return schoolId; } public void setSchoolId(Long v){ this.schoolId = v; }
   public String getAcademicYear(){ return academicYear; } public void setAcademicYear(String v){ this.academicYear = v; }
@@ -48,6 +55,12 @@ public class GroupResponse {
   public Long getSubjectId(){ return subjectId; } public void setSubjectId(Long v){ this.subjectId = v; }
   public Long getLevelId(){ return levelId; } public void setLevelId(Long v){ this.levelId = v; }
   public Long getSectionId(){ return sectionId; } public void setSectionId(Long v){ this.sectionId = v; }
+
+  public Long getClassroomId() { return classroomId; }
+  public void setClassroomId(Long classroomId) { this.classroomId = classroomId; }
+  public String getClassroomName() { return classroomName; }
+  public void setClassroomName(String classroomName) { this.classroomName = classroomName; }
+
   public boolean isPrivateGroup(){ return privateGroup; } public void setPrivateGroup(boolean v){ this.privateGroup = v; }
   public boolean isRevisionGroup(){ return revisionGroup; } public void setRevisionGroup(boolean v){ this.revisionGroup = v; }
   public boolean isActive(){ return active; } public void setActive(boolean v){ this.active = v; }

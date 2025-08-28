@@ -1,14 +1,16 @@
 package com.example.demo.models;
 
 import jakarta.persistence.*;
-
 import java.time.DayOfWeek;
 import java.time.LocalTime;
 import java.util.Objects;
 
 @Entity
 @Table(name = "group_schedule",
-       indexes = @Index(name="idx_sched_group_day", columnList = "group_id, day_of_week"))
+       indexes = {
+         @Index(name="idx_sched_group_day", columnList = "group_id, day_of_week"),
+         @Index(name="idx_sched_room_day_start", columnList = "classroom_id, day_of_week, start_time")
+       })
 public class GroupSchedule {
 
   @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -16,6 +18,9 @@ public class GroupSchedule {
 
   @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name="group_id", nullable=false)
   private StudyGroup group;
+
+  @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name="classroom_id", nullable=false)
+  private Classroom classroom;
 
   @Enumerated(EnumType.STRING)
   @Column(name="day_of_week", nullable=false, length=10)
@@ -30,11 +35,14 @@ public class GroupSchedule {
   @Column(name="active", nullable=false)
   private boolean active = true;
 
-  // getters & setters
   public Long getId() { return id; }
   public void setId(Long id) { this.id = id; }
   public StudyGroup getGroup() { return group; }
   public void setGroup(StudyGroup group) { this.group = group; }
+
+  public Classroom getClassroom() { return classroom; }
+  public void setClassroom(Classroom classroom) { this.classroom = classroom; }
+
   public DayOfWeek getDayOfWeek() { return dayOfWeek; }
   public void setDayOfWeek(DayOfWeek dayOfWeek) { this.dayOfWeek = dayOfWeek; }
   public LocalTime getStartTime() { return startTime; }

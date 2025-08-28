@@ -14,6 +14,9 @@ public class StudyGroup {
   @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
   private Long id;
 
+  @Column(name = "name", length = 200)  // nullable on purpose for easy rollout
+  private String name;
+  
   @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "school_id")
   private School school;
 
@@ -31,6 +34,11 @@ public class StudyGroup {
 
   @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "section_id", nullable = false)
   private Section section;
+
+  // NEW: optional classroom for this group
+  @ManyToOne(fetch = FetchType.LAZY)
+  @JoinColumn(name = "classroom_id")
+  private Classroom classroom;
 
   @Column(name = "private_group", nullable = false)  private boolean privateGroup = false;
   @Column(name = "revision_group", nullable = false) private boolean revisionGroup = false;
@@ -56,10 +64,10 @@ public class StudyGroup {
   @Column(name="absence_stop_threshold") private Integer absenceStopThreshold;
   @Column(name="warn_duplicate_card", nullable=false) private boolean warnDuplicateCard = true;
   @Column(name="allow_multiple_checkins_per_day", nullable=false) private boolean allowMultipleCheckinsPerDay = false;
-  
-//Day-4 additions
- @Column(name="approval_required", nullable=false)  private boolean approvalRequired = true;
- @Column(name="auto_close_grace_min", nullable=false) private int autoCloseGraceMin = 10;
+
+  // Day-4 additions
+  @Column(name="approval_required", nullable=false)  private boolean approvalRequired = true;
+  @Column(name="auto_close_grace_min", nullable=false) private int autoCloseGraceMin = 10;
 
   @Column(name="start_date") private LocalDate startDate;
   @Lob private String notes;
@@ -67,8 +75,15 @@ public class StudyGroup {
   @Column(name="created_at", nullable=false) private OffsetDateTime createdAt = OffsetDateTime.now();
   @Column(name="updated_at", nullable=false) private OffsetDateTime updatedAt = OffsetDateTime.now();
   @PreUpdate void touch(){ this.updatedAt = OffsetDateTime.now(); }
+  @PrePersist void onCreate() {
+    if (createdAt == null) createdAt = OffsetDateTime.now();
+    if (updatedAt == null) updatedAt = createdAt;
+  }
 
   // getters/setters...
+  // getters/setters
+  public String getName() { return name; }
+  public void setName(String name) { this.name = name; }
   public Long getId(){ return id; } public void setId(Long id){ this.id = id; }
   public School getSchool(){ return school; } public void setSchool(School school){ this.school = school; }
   public String getAcademicYear(){ return academicYear; } public void setAcademicYear(String academicYear){ this.academicYear = academicYear; }
@@ -76,6 +91,9 @@ public class StudyGroup {
   public Subject getSubject(){ return subject; } public void setSubject(Subject subject){ this.subject = subject; }
   public Level getLevel(){ return level; } public void setLevel(Level level){ this.level = level; }
   public Section getSection(){ return section; } public void setSection(Section section){ this.section = section; }
+
+  public Classroom getClassroom() { return classroom; }
+  public void setClassroom(Classroom classroom) { this.classroom = classroom; }
 
   public boolean isPrivateGroup(){ return privateGroup; } public void setPrivateGroup(boolean v){ this.privateGroup = v; }
   public boolean isRevisionGroup(){ return revisionGroup; } public void setRevisionGroup(boolean v){ this.revisionGroup = v; }
@@ -106,44 +124,11 @@ public class StudyGroup {
   public void setWarnDuplicateCard(boolean v){ this.warnDuplicateCard = v; }
   public boolean isAllowMultipleCheckinsPerDay(){ return allowMultipleCheckinsPerDay; }
   public void setAllowMultipleCheckinsPerDay(boolean v){ this.allowMultipleCheckinsPerDay = v; }
-  
-//--- day-4 additions (getters/setters) ---
-public boolean isApprovalRequired() {
- return approvalRequired;
-}
-public void setApprovalRequired(boolean approvalRequired) {
- this.approvalRequired = approvalRequired;
-}
 
-public int getAutoCloseGraceMin() {
- return autoCloseGraceMin;
-}
-public void setAutoCloseGraceMin(int autoCloseGraceMin) {
- this.autoCloseGraceMin = autoCloseGraceMin;
-}
-
-//--- timestamps ---
-public java.time.OffsetDateTime getCreatedAt() {
- return createdAt;
-}
-public void setCreatedAt(java.time.OffsetDateTime createdAt) {
- this.createdAt = createdAt;
-}
-
-public java.time.OffsetDateTime getUpdatedAt() {
- return updatedAt;
-}
-public void setUpdatedAt(java.time.OffsetDateTime updatedAt) {
- this.updatedAt = updatedAt;
-}
-
-//keep your @PreUpdate touch() and add @PrePersist so values are never null
-@jakarta.persistence.PrePersist
-void onCreate() {
- if (createdAt == null) createdAt = java.time.OffsetDateTime.now();
- if (updatedAt == null) updatedAt = createdAt;
-}
-
+  public boolean isApprovalRequired() { return approvalRequired; }
+  public void setApprovalRequired(boolean approvalRequired) { this.approvalRequired = approvalRequired; }
+  public int getAutoCloseGraceMin() { return autoCloseGraceMin; }
+  public void setAutoCloseGraceMin(int autoCloseGraceMin) { this.autoCloseGraceMin = autoCloseGraceMin; }
 
   public LocalDate getStartDate(){ return startDate; } public void setStartDate(LocalDate v){ this.startDate = v; }
   public String getNotes(){ return notes; } public void setNotes(String v){ this.notes = v; }
