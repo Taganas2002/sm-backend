@@ -1,634 +1,351 @@
 package com.example.demo.services.Implementation;
 
-import com.example.demo.dto.request.*;
-import com.example.demo.dto.response.*;
-import com.example.demo.models.AttendanceSession;
-import com.example.demo.models.GroupSchedule;
-import com.example.demo.models.Student;
-import com.example.demo.models.StudyGroup;
-import com.example.demo.models.Teacher;
-import com.example.demo.models.enums.ApproverType;
-import com.example.demo.models.enums.AttendanceMark;
-import com.example.demo.models.enums.SessionStatus;
-import com.example.demo.repository.*;
+import com.example.demo.dto.response.AttendanceMatrixResponse;
+import com.example.demo.dto.response.SessionResponse;
+import com.example.demo.models.*;
+import com.example.demo.models.enums.AttendanceSessionStatus;
+import com.example.demo.models.enums.StudentAttendanceStatus;
+import com.example.demo.repository.AttendanceSessionRepo;
+import com.example.demo.repository.StudentAttendanceRepo;
+import com.example.demo.repository.StudentPreCheckinRepo;
+import com.example.demo.repository.StudentRepo;
 import com.example.demo.services.Interface.AttendanceService;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
 
+import java.lang.reflect.Method;
 import java.time.*;
-import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
+
+import static org.springframework.http.HttpStatus.*;
 
 @Service
 public class AttendanceServiceImpl implements AttendanceService {
 
-  private final GroupScheduleRepo scheduleRepo;
   private final AttendanceSessionRepo sessionRepo;
-  private final StudentAttendanceRepo studentAttendanceRepo;
+  private final StudentAttendanceRepo attendanceRepo;
+  private final StudentPreCheckinRepo preRepo;
   private final StudentRepo studentRepo;
-  private final TeacherRepo teacherRepo;
-  private final StudyGroupRepo groupRepo;
-  private final EnrollmentRepo enrollmentRepo; // <- for roster & auto-absent
 
-  private static final ZoneId SCHOOL_TZ = ZoneId.of("Africa/Algiers");
-  private static final DateTimeFormatter DATE_F = DateTimeFormatter.ISO_LOCAL_DATE; // yyyy-MM-dd
-  private static final DateTimeFormatter TIME_F = DateTimeFormatter.ofPattern("HH:mm");
+  @PersistenceContext private EntityManager em;
 
-  public AttendanceServiceImpl(GroupScheduleRepo scheduleRepo,
-                               AttendanceSessionRepo sessionRepo,
-                               StudentAttendanceRepo studentAttendanceRepo,
-                               StudentRepo studentRepo,
-                               TeacherRepo teacherRepo,
-                               StudyGroupRepo groupRepo,
-                               EnrollmentRepo enrollmentRepo) {
-    this.scheduleRepo = scheduleRepo;
+  public AttendanceServiceImpl(AttendanceSessionRepo sessionRepo,
+                               StudentAttendanceRepo attendanceRepo,
+                               StudentPreCheckinRepo preRepo,
+                               StudentRepo studentRepo) {
     this.sessionRepo = sessionRepo;
-    this.studentAttendanceRepo = studentAttendanceRepo;
+    this.attendanceRepo = attendanceRepo;
+    this.preRepo = preRepo;
     this.studentRepo = studentRepo;
-    this.teacherRepo = teacherRepo;
-    this.groupRepo = groupRepo;
-    this.enrollmentRepo = enrollmentRepo;
   }
 
-  // ========================= A) Teacher starts session =========================
-  @Transactional
-  @Override
-  public SessionSummaryResponse teacherStart(TeacherStartRequest req) {
-    Objects.requireNonNull(req.getGroupId(), "groupId");
-    Objects.requireNonNull(req.getSlotDate(), "slotDate");
-    Objects.requireNonNull(req.getStartTime(), "startTime");
-    Objects.requireNonNull(req.getEndTime(), "endTime");
-    Objects.requireNonNull(req.getSource(), "source");
-
-    StudyGroup group = groupRepo.findById(req.getGroupId())
-        .orElseThrow(() -> new IllegalArgumentException("Group not found"));
-
-    // Auth: QR or manual (if manual, we assume controller already enforced auth)
-    if ("qr".equalsIgnoreCase(req.getSource())) {
-      String token = Objects.requireNonNull(req.getTeacherToken(), "teacherToken required for QR");
-      Teacher teacher = teacherRepo.findByCardUid(token)
-          .orElseThrow(() -> new IllegalArgumentException("Invalid teacher card/QR"));
-      if (!Objects.equals(group.getTeacher().getId(), teacher.getId())) {
-        throw new IllegalStateException("Teacher not assigned to this group");
-      }
-    }
-
-    LocalDate date = LocalDate.parse(req.getSlotDate());
-    LocalTime start = LocalTime.parse(req.getStartTime());
-    LocalTime end   = LocalTime.parse(req.getEndTime());
-
-    ensureSlotExistsForGroupAndDay(group.getId(), date, start, end);
-    checkServerTimeWithinGrace(date, start, end);
-
-    AttendanceSession session = sessionRepo
-        .findByGroupAndSessionDateAndStartTimeAndEndTime(group, date, start, end)
-        .orElseGet(() -> {
-          AttendanceSession s = new AttendanceSession();
-          s.setGroup(group);
-          s.setSessionDate(date);
-          s.setStartTime(start);
-          s.setEndTime(end);
-          s.setStatus(SessionStatus.PLANNED);
-          return sessionRepo.save(s);
-        });
-
-    if (session.getStatus() == SessionStatus.PLANNED || session.getStatus() == SessionStatus.PENDING_APPROVAL) {
-      session.setStatus(SessionStatus.OPEN);
-      session.setApprovedBy(ApproverType.TEACHER);
-      session.setApprovedAt(OffsetDateTime.now(SCHOOL_TZ));
-      if (session.getOpenedAt() == null) session.setOpenedAt(OffsetDateTime.now(SCHOOL_TZ));
-      sessionRepo.save(session);
-    }
-
-    return toSummaryResponse(session, "Session opened.");
+  // --------- helpers ---------
+  private <T> T mustFind(Class<T> type, Long id){
+    T x = em.find(type, id);
+    if (x==null) throw new ResponseStatusException(NOT_FOUND, type.getSimpleName()+" not found: "+id);
+    return x;
   }
 
-  // ========================= B) Student present (slot identity) =========================
-  @Transactional
-  @Override
-  public StudentPresentResponse studentPresent(StudentPresentRequest req) {
-    Objects.requireNonNull(req.getGroupId(), "groupId");
-    Objects.requireNonNull(req.getSlotDate(), "slotDate");
-    Objects.requireNonNull(req.getStartTime(), "startTime");
-    Objects.requireNonNull(req.getEndTime(), "endTime");
-    Objects.requireNonNull(req.getSource(), "source");
-
-    StudyGroup group = groupRepo.findById(req.getGroupId())
-        .orElseThrow(() -> new IllegalArgumentException("Group not found"));
-
-    Student student = resolveStudent(req.getStudentId(), req.getStudentToken());
-
-    LocalDate date = LocalDate.parse(req.getSlotDate());
-    LocalTime start = LocalTime.parse(req.getStartTime());
-    LocalTime end   = LocalTime.parse(req.getEndTime());
-
-    ensureSlotExistsForGroupAndDay(group.getId(), date, start, end);
-
-    Optional<AttendanceSession> opt = sessionRepo
-        .findByGroupAndSessionDateAndStartTimeAndEndTime(group, date, start, end);
-
-    if (opt.isEmpty() || opt.get().getStatus() != SessionStatus.OPEN) {
-      StudentPresentResponse r = new StudentPresentResponse();
-      r.status = "WAITING_FOR_TEACHER";
-      r.slotDate = date.format(DATE_F);
-      r.startTime = start.format(TIME_F);
-      r.endTime = end.format(TIME_F);
-      r.message = "Teacher has not started the session yet.";
-      return r;
-    }
-
-    AttendanceSession session = opt.get();
-    boolean already = studentAttendanceRepo.existsBySessionIdAndStudentId(session.getId(), student.getId());
-    if (!already) {
-      var att = new com.example.demo.models.StudentAttendance();
-      att.setSession(session);
-      att.setStudent(student);
-      att.setStatus(AttendanceMark.PRESENT);
-      att.setCheckedInAt(OffsetDateTime.now(SCHOOL_TZ));
-      studentAttendanceRepo.save(att);
-    }
-
-    StudentPresentResponse r = new StudentPresentResponse();
-    r.status = already ? "ALREADY_CHECKED_IN" : "CHECKED_IN";
-    r.sessionId = session.getId();
-    r.presentCount = countPresent(session.getId());
-    r.message = already ? "Already checked in." : "Checked in.";
-    return r;
-  }
-
-  // ========================= B2) Student present (by sessionId) =========================
-  @Transactional
-  @Override
-  public StudentPresentResponse studentPresentBySessionId(Long sessionId, Long studentId, String studentToken, String source) {
-    AttendanceSession session = sessionRepo.findById(Objects.requireNonNull(sessionId))
-        .orElseThrow(() -> new IllegalArgumentException("Session not found"));
-
-    if (session.getStatus() != SessionStatus.OPEN) {
-      StudentPresentResponse r = new StudentPresentResponse();
-      r.status = "WAITING_FOR_TEACHER";
-      r.slotDate = session.getSessionDate().format(DATE_F);
-      r.startTime = session.getStartTime().format(TIME_F);
-      r.endTime = session.getEndTime().format(TIME_F);
-      r.message = "Session is not OPEN.";
-      return r;
-    }
-
-    Student student = resolveStudent(studentId, studentToken);
-
-    boolean already = studentAttendanceRepo.existsBySessionIdAndStudentId(session.getId(), student.getId());
-    if (!already) {
-      var att = new com.example.demo.models.StudentAttendance();
-      att.setSession(session);
-      att.setStudent(student);
-      att.setStatus(AttendanceMark.PRESENT);
-      att.setCheckedInAt(OffsetDateTime.now(SCHOOL_TZ));
-      studentAttendanceRepo.save(att);
-    }
-
-    StudentPresentResponse r = new StudentPresentResponse();
-    r.status = already ? "ALREADY_CHECKED_IN" : "CHECKED_IN";
-    r.sessionId = session.getId();
-    r.presentCount = countPresent(session.getId());
-    r.message = already ? "Already checked in." : "Checked in.";
-    return r;
-  }
-
-  // ========================= C) Bulk present (slot identity) =========================
-  @Transactional
-  @Override
-  public BulkPresentResponse bulkPresent(BulkPresentRequest req) {
-    Objects.requireNonNull(req.getGroupId(), "groupId");
-    Objects.requireNonNull(req.getSlotDate(), "slotDate");
-    Objects.requireNonNull(req.getStartTime(), "startTime");
-    Objects.requireNonNull(req.getEndTime(), "endTime");
-    Objects.requireNonNull(req.getSource(), "source");
-    Objects.requireNonNull(req.getStudentIds(), "studentIds");
-
-    StudyGroup group = groupRepo.findById(req.getGroupId())
-        .orElseThrow(() -> new IllegalArgumentException("Group not found"));
-
-    LocalDate date = LocalDate.parse(req.getSlotDate());
-    LocalTime start = LocalTime.parse(req.getStartTime());
-    LocalTime end   = LocalTime.parse(req.getEndTime());
-
-    ensureSlotExistsForGroupAndDay(group.getId(), date, start, end);
-
-    AttendanceSession session = sessionRepo
-        .findByGroupAndSessionDateAndStartTimeAndEndTime(group, date, start, end)
-        .orElseThrow(() -> new IllegalStateException("Session is not opened yet (teacher must start)"));
-
-    if (session.getStatus() != SessionStatus.OPEN) {
-      throw new IllegalStateException("Session is not OPEN");
-    }
-
-    int marked = req.getStudentIds().size();
-    int newly = 0;
-
-    for (Long sid : req.getStudentIds()) {
-      Student st = studentRepo.findById(sid)
-          .orElseThrow(() -> new IllegalArgumentException("Student not found: " + sid));
-      boolean already = studentAttendanceRepo.existsBySessionIdAndStudentId(session.getId(), st.getId());
-      if (!already) {
-        var att = new com.example.demo.models.StudentAttendance();
-        att.setSession(session);
-        att.setStudent(st);
-        att.setStatus(AttendanceMark.PRESENT);
-        att.setCheckedInAt(OffsetDateTime.now(SCHOOL_TZ));
-        studentAttendanceRepo.save(att);
-        newly++;
-      }
-    }
-
-    BulkPresentResponse r = new BulkPresentResponse();
-    r.sessionId = session.getId();
-    r.groupId = group.getId();
-    r.marked = marked;
-    r.newlyAdded = newly;
-    r.presentCount = countPresent(session.getId());
-    return r;
-  }
-
-  // ========================= C2) Bulk present (by sessionId) =========================
-  @Transactional
-  @Override
-  public BulkPresentResponse bulkPresentBySessionId(Long sessionId, List<Long> studentIds, String source) {
-    AttendanceSession session = sessionRepo.findById(Objects.requireNonNull(sessionId))
-        .orElseThrow(() -> new IllegalArgumentException("Session not found"));
-
-    if (session.getStatus() != SessionStatus.OPEN) {
-      throw new IllegalStateException("Session is not OPEN");
-    }
-
-    int marked = studentIds.size();
-    int newly = 0;
-
-    for (Long sid : studentIds) {
-      Student st = studentRepo.findById(sid)
-          .orElseThrow(() -> new IllegalArgumentException("Student not found: " + sid));
-      boolean already = studentAttendanceRepo.existsBySessionIdAndStudentId(session.getId(), st.getId());
-      if (!already) {
-        var att = new com.example.demo.models.StudentAttendance();
-        att.setSession(session);
-        att.setStudent(st);
-        att.setStatus(AttendanceMark.PRESENT);
-        att.setCheckedInAt(OffsetDateTime.now(SCHOOL_TZ));
-        studentAttendanceRepo.save(att);
-        newly++;
-      }
-    }
-
-    BulkPresentResponse r = new BulkPresentResponse();
-    r.sessionId = session.getId();
-    r.groupId = session.getGroup().getId();
-    r.marked = marked;
-    r.newlyAdded = newly;
-    r.presentCount = countPresent(session.getId());
-    return r;
-  }
-
-  // ========================= D) Close session (auto-ABSENT fill) ======================
-  @Transactional
-  @Override
-  public CloseSessionResponse closeSession(Long sessionId, String reason) {
-    AttendanceSession s = sessionRepo.findById(Objects.requireNonNull(sessionId))
-        .orElseThrow(() -> new IllegalArgumentException("Session not found"));
-
-    boolean applied = false;
-
-    if (s.getStatus() != SessionStatus.CLOSED) {
-      // fill ABSENT for enrolled students who don't have a row yet
-      applied = fillAbsentees(s);
-      s.setStatus(SessionStatus.CLOSED);
-      s.setClosedAt(OffsetDateTime.now(SCHOOL_TZ));
-      sessionRepo.save(s);
-    }
-
-    CloseSessionResponse r = new CloseSessionResponse();
-    r.ok = true;
-    r.status = s.getStatus().name();
-    r.autoAbsentApplied = applied;
-    return r;
-  }
-
-  // ========================= E) Live session =========================
-  @Transactional(readOnly = true)
-  @Override
-  public LiveSessionResponse liveSession(Long groupId) {
-    StudyGroup group = groupRepo.findById(Objects.requireNonNull(groupId))
-        .orElseThrow(() -> new IllegalArgumentException("Group not found"));
-
-    ZonedDateTime now = ZonedDateTime.now(SCHOOL_TZ);
-    DayOfWeek dow = now.getDayOfWeek();
-    LocalTime t = now.toLocalTime();
-
-    List<GroupSchedule> slots = scheduleRepo.findByGroupIdAndDayOfWeekAndActiveIsTrue(groupId, dow);
-    for (GroupSchedule s : slots) {
-      if (!t.isBefore(s.getStartTime()) && !t.isAfter(s.getEndTime())) {
-        Optional<AttendanceSession> opt = sessionRepo
-            .findByGroupAndSessionDateAndStartTimeAndEndTime(group, now.toLocalDate(), s.getStartTime(), s.getEndTime());
-        if (opt.isPresent()) {
-          AttendanceSession as = opt.get();
-          LiveSessionResponse r = new LiveSessionResponse();
-          r.sessionId = as.getId();
-          r.groupId = groupId;
-          r.date = as.getSessionDate().format(DATE_F);
-          r.startTime = as.getStartTime().format(TIME_F);
-          r.endTime = as.getEndTime().format(TIME_F);
-          r.status = as.getStatus().name();
-          r.presentCount = countPresent(as.getId());
-          r.openedAt = as.getOpenedAt() != null ? as.getOpenedAt().toString() : null;
-          return r;
-        } else {
-          return null; // no materialized session yet
-        }
+  /** Reflection-safe read of optional LocalDate accessors. */
+  private LocalDate getLocalDateIfPresent(Object obj, String... methodNames) {
+    for (String name : methodNames) {
+      try {
+        Method m = obj.getClass().getMethod(name);
+        Object v = m.invoke(obj);
+        if (v instanceof LocalDate d) return d;
+      } catch (NoSuchMethodException ignore) {
+      } catch (Exception e) {
+        throw new ResponseStatusException(BAD_REQUEST, "Cannot read schedule field: " + name, e);
       }
     }
     return null;
   }
 
-  // ========================= F) Sessions list & detail =========================
-  @Transactional(readOnly = true)
-  @Override
-  public SessionsListResponse listSessions(Long groupId, LocalDate from, LocalDate to, boolean includePlanned) {
-    StudyGroup group = groupRepo.findById(Objects.requireNonNull(groupId))
-        .orElseThrow(() -> new IllegalArgumentException("Group not found"));
-
-    List<AttendanceSession> sessions =
-        sessionRepo.findByGroupIdAndSessionDateBetweenOrderBySessionDateAscStartTimeAsc(groupId, from, to);
-
-    Map<String, AttendanceSession> byKey = new HashMap<>();
-    for (AttendanceSession s : sessions) {
-      byKey.put(key(s.getSessionDate(), s.getStartTime(), s.getEndTime()), s);
+  private Method findMethodOrNull(Class<?> type, String... names) {
+    for (String n : names) {
+      try { return type.getMethod(n); }
+      catch (NoSuchMethodException ignore) {}
     }
+    return null;
+  }
 
-    List<SessionsListResponse.Item> out = new ArrayList<>();
+  private Object invoke(Object target, Method m) {
+    try { return m.invoke(target); }
+    catch (Exception e) { throw new ResponseStatusException(BAD_REQUEST, "Validation failed", e); }
+  }
 
-    for (AttendanceSession s : sessions) {
-      SessionsListResponse.Item it = new SessionsListResponse.Item();
-      it.sessionId = s.getId();
-      it.date = s.getSessionDate().format(DATE_F);
-      it.startTime = s.getStartTime().format(TIME_F);
-      it.endTime = s.getEndTime().format(TIME_F);
-      it.status = s.getStatus().name();
-      it.presentCount = countPresent(s.getId());
-      out.add(it);
-    }
-
-    if (includePlanned) {
-      Map<DayOfWeek, List<GroupSchedule>> schedByDay = scheduleRepo.findByGroupId(groupId)
-          .stream().filter(GroupSchedule::isActive).collect(Collectors.groupingBy(GroupSchedule::getDayOfWeek));
-
-      LocalDate d = from;
-      while (!d.isAfter(to)) {
-        DayOfWeek dow = d.getDayOfWeek();
-        List<GroupSchedule> daySlots = schedByDay.getOrDefault(dow, Collections.emptyList());
-        for (GroupSchedule gs : daySlots) {
-          String k = key(d, gs.getStartTime(), gs.getEndTime());
-          if (!byKey.containsKey(k)) {
-            SessionsListResponse.Item it = new SessionsListResponse.Item();
-            it.sessionId = null;
-            it.date = d.format(DATE_F);
-            it.startTime = gs.getStartTime().format(TIME_F);
-            it.endTime = gs.getEndTime().format(TIME_F);
-            it.status = SessionStatus.PLANNED.name();
-            it.presentCount = null;
-            out.add(it);
-          }
+  /** Validate that the schedule occurrence exists on the given date (calendar check). */
+  private void assertScheduleMatchesDate(GroupSchedule sched, LocalDate date){
+    // 1) Day-of-week matches (if entity exposes it)
+    Method mDow = findMethodOrNull(sched.getClass(), "getDayOfWeek");
+    if (mDow != null) {
+      Object v = invoke(sched, mDow);
+      if (v != null) {
+        DayOfWeek expected = DayOfWeek.valueOf(v.toString().toUpperCase());
+        if (!expected.equals(date.getDayOfWeek())) {
+          throw new ResponseStatusException(BAD_REQUEST,
+              "Schedule does not run on " + date.getDayOfWeek() + " (schedule day: " + expected + ")");
         }
-        d = d.plusDays(1);
       }
-
-      out.sort(Comparator
-          .comparing((SessionsListResponse.Item i) -> LocalDate.parse(i.date))
-          .thenComparing(i -> LocalTime.parse(i.startTime)));
     }
 
-    SessionsListResponse r = new SessionsListResponse();
-    r.items = out;
+    // 2) Effective window (if present on entity)
+    LocalDate from = getLocalDateIfPresent(sched, "getStartDate", "getValidFrom", "getFromDate");
+    LocalDate to   = getLocalDateIfPresent(sched, "getEndDate",   "getValidTo",   "getToDate");
+    if (from != null && date.isBefore(from))
+      throw new ResponseStatusException(BAD_REQUEST, "Date is before schedule start: " + from);
+    if (to != null && date.isAfter(to))
+      throw new ResponseStatusException(BAD_REQUEST, "Date is after schedule end: " + to);
+
+    // 3) Group active (if StudyGroup has such flag)
+    try {
+      StudyGroup g = sched.getGroup();
+      if (g != null) {
+        Method mActive = findMethodOrNull(g.getClass(), "isActive", "getActive");
+        if (mActive != null) {
+          Object active = invoke(g, mActive);
+          if (active instanceof Boolean b && !b)
+            throw new ResponseStatusException(BAD_REQUEST, "Group is inactive");
+        }
+      }
+    } catch (Exception e) {
+      // don't block if your model doesn't expose this; keep lenient
+    }
+  }
+
+  private SessionResponse toResponse(AttendanceSession s){
+    long p = attendanceRepo.countBySession_IdAndStatus(s.getId(), StudentAttendanceStatus.PRESENT);
+    long a = attendanceRepo.countBySession_IdAndStatus(s.getId(), StudentAttendanceStatus.ABSENT);
+    SessionResponse r = new SessionResponse(
+        s.getId(), s.getGroup().getId(), s.getSchedule().getId(), s.getSessionDate(),
+        s.getStatus().name(), p, a
+    );
+    r.setPresentStudentIds(
+        attendanceRepo.findStudentIdsBySessionAndStatus(s.getId(), StudentAttendanceStatus.PRESENT)
+    );
     return r;
   }
 
-  @Transactional(readOnly = true)
-  @Override
-  public SessionDetailResponse getSession(Long sessionId) {
-    AttendanceSession s = sessionRepo.findById(Objects.requireNonNull(sessionId))
-        .orElseThrow(() -> new IllegalArgumentException("Session not found"));
-
-    SessionDetailResponse r = new SessionDetailResponse();
-    r.sessionId = s.getId();
-    r.groupId = s.getGroup().getId();
-    r.date = s.getSessionDate().format(DATE_F);
-    r.startTime = s.getStartTime().format(TIME_F);
-    r.endTime = s.getEndTime().format(TIME_F);
-    r.status = s.getStatus().name();
-
-    var rows = studentAttendanceRepo.findBySessionId(s.getId());
-    r.students = rows.stream().map(a -> {
-      SessionDetailResponse.StudentRow row = new SessionDetailResponse.StudentRow();
-      row.studentId = a.getStudent().getId();
-      String nm = a.getStudent().getFullName();
-      row.name = nm == null ? "" : nm;
-      row.checkedInAt = a.getCheckedInAt() == null ? null : a.getCheckedInAt().toString();
-      row.attendanceStatus = (a.getStatus() == AttendanceMark.PRESENT) ? "PRESENT"
-          : (a.getCheckedInAt() != null ? "PRESENT" : "ABSENT");
-      return row;
-    }).collect(Collectors.toList());
-
-    return r;
+  private void upsertPresent(AttendanceSession s, Student student, ZoneOffset offset) {
+    var a = attendanceRepo.findBySession_IdAndStudent_Id(s.getId(), student.getId())
+        .orElseGet(() -> { var na = new StudentAttendance(); na.setSession(s); na.setStudent(student); return na; });
+    a.setStatus(StudentAttendanceStatus.PRESENT);
+    a.setCheckedInAt(OffsetDateTime.now(offset));
+    attendanceRepo.save(a);
   }
 
-  // ========================= G) Running consumption (X/quota) =========================
-  @Transactional(readOnly = true)
-  @Override
-  public ConsumptionRunningResponse runningConsumption(Long studentId, Long groupId) {
-    Student st = studentRepo.findById(Objects.requireNonNull(studentId))
-        .orElseThrow(() -> new IllegalArgumentException("Student not found"));
-    StudyGroup group = groupRepo.findById(Objects.requireNonNull(groupId))
-        .orElseThrow(() -> new IllegalArgumentException("Group not found"));
-
-    long attended = studentAttendanceRepo.countByStudentIdAndSession_Group_Id(studentId, groupId);
-
-    int quota = Optional.ofNullable(group.getSessionsPerMonth()).orElse(8);
-    int attendedInt = (int) attended;
-
-    int cyclesCompleted = (quota > 0) ? (attendedInt / quota) : 0;
-    int currentCycleAttended = (quota > 0) ? (attendedInt % quota) : attendedInt;
-    int remaining = (quota > 0) ? (quota - currentCycleAttended) : 0;
-    boolean needsPayment = quota > 0 && attendedInt > 0 && attendedInt % quota == 0;
-
-    ConsumptionRunningResponse r = new ConsumptionRunningResponse();
-    r.studentId = studentId;
-    r.groupId = groupId;
-    r.attended = attendedInt;
-    r.quota = quota;
-    r.ratio = quota > 0 ? (currentCycleAttended + "/" + quota) : (attendedInt + "/∞");
-    r.cyclesCompleted = cyclesCompleted;
-    r.currentCycleAttended = currentCycleAttended;
-    r.remainingInCurrentCycle = remaining;
-    r.needsPayment = needsPayment;
-    return r;
-  }
-
-  // ========================= Utility =========================
+  // --------- START ----------
   @Transactional
   @Override
-  public Long ensureSessionId(Long groupId, LocalDate slotDate, LocalTime startTime, LocalTime endTime, boolean openIfTeacherStart) {
-    StudyGroup group = groupRepo.findById(Objects.requireNonNull(groupId))
-        .orElseThrow(() -> new IllegalArgumentException("Group not found"));
-    ensureSlotExistsForGroupAndDay(group.getId(), slotDate, startTime, endTime);
+  public SessionResponse start(Long scheduleId, LocalDate date, ZoneOffset offset) {
+    GroupSchedule sched = mustFind(GroupSchedule.class, scheduleId);
+    StudyGroup group = sched.getGroup(); // ensure schedule owns the group
+    assertScheduleMatchesDate(sched, date);
 
-    AttendanceSession session = sessionRepo
-        .findByGroupAndSessionDateAndStartTimeAndEndTime(group, slotDate, startTime, endTime)
+    // idempotent per (group, schedule, date)
+    AttendanceSession s = sessionRepo.findByGroupAndScheduleAndSessionDate(group, sched, date)
         .orElseGet(() -> {
-          AttendanceSession s = new AttendanceSession();
-          s.setGroup(group);
-          s.setSessionDate(slotDate);
-          s.setStartTime(startTime);
-          s.setEndTime(endTime);
-          s.setStatus(SessionStatus.PLANNED);
-          return sessionRepo.save(s);
+          AttendanceSession ns = new AttendanceSession();
+          ns.setGroup(group);
+          ns.setSchedule(sched);
+          ns.setSessionDate(date);
+          ns.setStartTime(sched.getStartTime());
+          ns.setEndTime(sched.getEndTime());
+          ns.setStatus(AttendanceSessionStatus.OPEN);
+          ns.setStartedAt(OffsetDateTime.now(offset));
+          return sessionRepo.save(ns);
         });
 
-    if (openIfTeacherStart && session.getStatus() != SessionStatus.OPEN) {
-      session.setStatus(SessionStatus.OPEN);
-      session.setApprovedBy(ApproverType.TEACHER);
-      session.setApprovedAt(OffsetDateTime.now(SCHOOL_TZ));
-      if (session.getOpenedAt() == null) session.setOpenedAt(OffsetDateTime.now(SCHOOL_TZ));
-      sessionRepo.save(session);
-    }
+    if (s.getStatus() == AttendanceSessionStatus.CLOSED) return toResponse(s);
 
-    return session.getId();
+    // Apply pre-scans (if any) then clear them
+    var pres = preRepo.findByGroup_IdAndSchedule_IdAndSessionDate(group.getId(), scheduleId, date);
+    for (var pre : pres) upsertPresent(s, pre.getStudent(), offset);
+    if (!pres.isEmpty()) preRepo.deleteByGroup_IdAndSchedule_IdAndSessionDate(group.getId(), scheduleId, date);
+
+    return toResponse(s);
   }
 
-  // ====== Roster: set single cell (Present / Absent) ======
-  @Override
+  // --------- SCAN (single) usable before/after start ----------
   @Transactional
-  public SessionDetailResponse setRosterMark(Long sessionId, Long studentId, String status, String source) {
-    var s = sessionRepo.findById(Objects.requireNonNull(sessionId))
-        .orElseThrow(() -> new IllegalArgumentException("Session not found"));
-    var st = studentRepo.findById(Objects.requireNonNull(studentId))
-        .orElseThrow(() -> new IllegalArgumentException("Student not found"));
+  @Override
+  public SessionResponse scan(Long scheduleId, LocalDate date, Long studentId, ZoneOffset offset) {
+    GroupSchedule sched = mustFind(GroupSchedule.class, scheduleId);
+    assertScheduleMatchesDate(sched, date);
+    Student student = mustFind(Student.class, studentId);
 
-    AttendanceMark mark = parseMark(status);
-
-    var rowOpt = studentAttendanceRepo.findBySessionIdAndStudentId(sessionId, studentId);
-    com.example.demo.models.StudentAttendance row = rowOpt.orElseGet(() -> {
-      var a = new com.example.demo.models.StudentAttendance();
-      a.setSession(s);
-      a.setStudent(st);
-      return a;
-    });
-
-    row.setStatus(mark);
-    if (mark == AttendanceMark.PRESENT) {
-      if (row.getCheckedInAt() == null) {
-        row.setCheckedInAt(OffsetDateTime.now(SCHOOL_TZ));
+    var existing = sessionRepo.findByGroupAndScheduleAndSessionDate(sched.getGroup(), sched, date);
+    if (existing.isPresent()) {
+      var s = existing.get();
+      if (s.getStatus() == AttendanceSessionStatus.OPEN) {
+        upsertPresent(s, student, offset);
       }
-    } else {
-      row.setCheckedInAt(null);
+      return toResponse(s); // if CLOSED, no modifications; just return summary
     }
 
-    studentAttendanceRepo.save(row);
-    return getSession(sessionId);
+    // Not started yet → save pre-scan
+    StudentPreCheckin p = new StudentPreCheckin();
+    p.setGroup(sched.getGroup());
+    p.setSchedule(sched);
+    p.setStudent(student);
+    p.setSessionDate(date);
+    p.setScannedAt(OffsetDateTime.now(offset));
+    try { preRepo.save(p); } catch (Exception ignored) {}
+
+    long count = preRepo.findByGroup_IdAndSchedule_IdAndSessionDate(
+        sched.getGroup().getId(), scheduleId, date).size();
+    return SessionResponse.pending(sched.getGroup().getId(), scheduleId, date, count);
   }
 
-  // ========================= Helpers =========================
-  private void ensureSlotExistsForGroupAndDay(Long groupId, LocalDate date, LocalTime start, LocalTime end) {
-    DayOfWeek dow = date.getDayOfWeek();
-    List<GroupSchedule> slots = scheduleRepo.findByGroupIdAndDayOfWeekAndActiveIsTrue(groupId, dow);
-    boolean exists = slots.stream().anyMatch(s ->
-        start.equals(s.getStartTime()) && end.equals(s.getEndTime())
-    );
-    if (!exists) {
-      throw new IllegalArgumentException("No schedule slot for this group at the given date/time");
+  // --------- SCAN (bulk) usable before/after start ----------
+  @Transactional
+  @Override
+  public SessionResponse scanBulk(Long scheduleId, LocalDate date, List<Long> studentIds, ZoneOffset offset) {
+    GroupSchedule sched = mustFind(GroupSchedule.class, scheduleId);
+    assertScheduleMatchesDate(sched, date);
+
+    var existing = sessionRepo.findByGroupAndScheduleAndSessionDate(sched.getGroup(), sched, date);
+    if (existing.isPresent()) {
+      var s = existing.get();
+      if (s.getStatus() != AttendanceSessionStatus.OPEN) return toResponse(s);
+      for (Long sid : studentIds) upsertPresent(s, mustFind(Student.class, sid), offset);
+      return toResponse(s);
     }
+
+    // Not started yet → pre-scans
+    for (Long sid : studentIds) {
+      StudentPreCheckin p = new StudentPreCheckin();
+      p.setGroup(sched.getGroup());
+      p.setSchedule(sched);
+      p.setStudent(mustFind(Student.class, sid));
+      p.setSessionDate(date);
+      p.setScannedAt(OffsetDateTime.now(offset));
+      try { preRepo.save(p); } catch (Exception ignored) {}
+    }
+
+    long count = preRepo.findByGroup_IdAndSchedule_IdAndSessionDate(
+        sched.getGroup().getId(), scheduleId, date).size();
+    return SessionResponse.pending(sched.getGroup().getId(), scheduleId, date, count);
   }
 
-  private void checkServerTimeWithinGrace(LocalDate date, LocalTime start, LocalTime end) {
-    ZonedDateTime now = ZonedDateTime.now(SCHOOL_TZ);
-    if (!now.toLocalDate().equals(date)) return;
-    LocalDateTime slotStart = LocalDateTime.of(date, start).minusMinutes(15);
-    LocalDateTime slotEnd   = LocalDateTime.of(date, end).plusMinutes(15);
-    LocalDateTime probe = now.toLocalDateTime();
-    if (probe.isBefore(slotStart) || probe.isAfter(slotEnd)) {
-      // not fatal in MVP
-    }
+  // --------- teacher bulk by session (kept) ----------
+  @Transactional
+  @Override
+  public SessionResponse bulkCheckIn(Long sessionId, List<Long> studentIds, ZoneOffset offset) {
+    AttendanceSession s = mustFind(AttendanceSession.class, sessionId);
+    if (s.getStatus()!=AttendanceSessionStatus.OPEN)
+      throw new ResponseStatusException(BAD_REQUEST, "Session is not OPEN");
+    for (Long sid : studentIds) upsertPresent(s, mustFind(Student.class, sid), offset);
+    return toResponse(s);
   }
 
-  private Student resolveStudent(Long studentId, String studentToken) {
-    if (studentId != null) {
-      return studentRepo.findById(studentId)
-          .orElseThrow(() -> new IllegalArgumentException("Student not found"));
+  // --------- CLOSE ----------
+  @Transactional
+  @Override
+  public SessionResponse close(Long sessionId, ZoneOffset offset) {
+    AttendanceSession s = mustFind(AttendanceSession.class, sessionId);
+    if (s.getStatus()==AttendanceSessionStatus.CLOSED) return toResponse(s);
+
+    List<Long> enrolled = studentRepo.findEnrolledStudentIds(s.getGroup().getId());
+    Set<Long> present = new HashSet<>(attendanceRepo
+        .findStudentIdsBySessionAndStatus(sessionId, StudentAttendanceStatus.PRESENT));
+
+    for (Long sid : enrolled) if (!present.contains(sid)) {
+      var a = attendanceRepo.findBySession_IdAndStudent_Id(sessionId, sid).orElseGet(() -> {
+        var na = new StudentAttendance(); na.setSession(s); na.setStudent(mustFind(Student.class, sid)); return na; });
+      a.setStatus(StudentAttendanceStatus.ABSENT);
+      attendanceRepo.save(a);
     }
-    if (studentToken != null && !studentToken.isBlank()) {
-      return studentRepo.findByCardUid(studentToken)
-          .orElseThrow(() -> new IllegalArgumentException("Invalid student card/QR"));
-    }
-    throw new IllegalArgumentException("Provide studentId or studentToken");
+    s.setStatus(AttendanceSessionStatus.CLOSED);
+    s.setClosedAt(OffsetDateTime.now(offset));
+    sessionRepo.save(s);
+    return toResponse(s);
   }
 
-  private SessionSummaryResponse toSummaryResponse(AttendanceSession s, String msg) {
-    SessionSummaryResponse r = new SessionSummaryResponse();
-    r.sessionId = s.getId();
-    r.groupId = s.getGroup().getId();
-    r.date = s.getSessionDate().format(DATE_F);
-    r.startTime = s.getStartTime().format(TIME_F);
-    r.endTime = s.getEndTime().format(TIME_F);
-    r.status = s.getStatus().name();
-    r.presentCount = countPresent(s.getId());
-    r.message = msg;
+  // --------- SUMMARY (hydrate UI) ----------
+  @Transactional(readOnly = true)
+  @Override
+  public SessionResponse summary(Long sessionId) {
+    return toResponse(mustFind(AttendanceSession.class, sessionId));
+  }
+
+  // --------- MATRIX (fullName mapping) ----------
+  @Transactional(readOnly = true)
+  @Override
+  public AttendanceMatrixResponse matrix(Long groupId, LocalDate start, LocalDate endExclusive) {
+    LocalDate endInclusive = endExclusive.minusDays(1);
+    if (start.isAfter(endInclusive)) {
+      AttendanceMatrixResponse empty = new AttendanceMatrixResponse();
+      empty.setDates(List.of());
+      empty.setStudents(List.of());
+      return empty;
+    }
+
+    var sessions = sessionRepo
+        .findByGroup_IdAndSessionDateBetweenOrderBySessionDateAsc(groupId, start, endExclusive);
+
+    if (sessions.isEmpty()) {
+      AttendanceMatrixResponse r = new AttendanceMatrixResponse();
+      r.setDates(List.of());
+      r.setStudents(List.of());
+      return r;
+    }
+
+    List<LocalDate> dateList = sessions.stream()
+        .map(AttendanceSession::getSessionDate).distinct().sorted().toList();
+    Map<LocalDate, AttendanceSession> sessionByDate = sessions.stream()
+        .collect(Collectors.toMap(AttendanceSession::getSessionDate, s -> s, (a,b)->a));
+
+    List<Long> studentIds = studentRepo.findEnrolledStudentIds(groupId);
+    List<Student> students = studentRepo.findAllById(studentIds);
+
+    List<Long> sessionIds = sessions.stream().map(AttendanceSession::getId).toList();
+    var attendanceRows = attendanceRepo.findBySession_IdIn(sessionIds);
+
+    Map<Long, Map<Long, StudentAttendanceStatus>> attMap = new HashMap<>();
+    for (var a : attendanceRows) {
+      attMap.computeIfAbsent(a.getSession().getId(), k -> new HashMap<>())
+            .put(a.getStudent().getId(), a.getStatus());
+    }
+
+    List<String> dates = dateList.stream().map(LocalDate::toString).toList();
+    List<AttendanceMatrixResponse.StudentLite> rows = new ArrayList<>();
+
+    for (Student st : students) {
+      List<String> cells = new ArrayList<>(Collections.nCopies(dateList.size(), ""));
+      for (LocalDate d : dateList) {
+        AttendanceSession s = sessionByDate.get(d);
+        StudentAttendanceStatus stStatus =
+            Optional.ofNullable(attMap.get(s.getId()))
+                .map(m -> m.get(st.getId()))
+                .orElse(null);
+        if (stStatus == StudentAttendanceStatus.PRESENT) {
+          cells.set(dates.indexOf(d.toString()), "P");
+        } else if (stStatus == StudentAttendanceStatus.ABSENT) {
+          cells.set(dates.indexOf(d.toString()), "A");
+        } else if (s.getStatus() == AttendanceSessionStatus.CLOSED) {
+          cells.set(dates.indexOf(d.toString()), "A"); // CLOSED and no row => Absent
+        }
+      }
+      rows.add(new AttendanceMatrixResponse.StudentLite(st.getId(), safeName(st), cells));
+    }
+
+    AttendanceMatrixResponse r = new AttendanceMatrixResponse();
+    r.setDates(dates);
+    r.setStudents(rows);
     return r;
   }
 
-  private static String key(LocalDate d, LocalTime s, LocalTime e) {
-    return d + "|" + s + "|" + e;
-  }
-
-  /** Count PRESENT rows. Falls back to in-memory check if repo doesn't support by-status. */
-  private int countPresent(Long sessionId) {
+  private String safeName(Student s) {
     try {
-      // if you added this method, it will be used
-      return (int) studentAttendanceRepo.countBySessionIdAndStatus(sessionId, AttendanceMark.PRESENT);
-    } catch (Throwable ignore) {
-      return (int) studentAttendanceRepo.findBySessionId(sessionId).stream()
-          .mapToInt(a -> {
-            try {
-              return (a.getStatus() == AttendanceMark.PRESENT) ? 1
-                  : (a.getCheckedInAt() != null ? 1 : 0);
-            } catch (Throwable e) {
-              return (a.getCheckedInAt() != null ? 1 : 0);
-            }
-          }).sum();
-    }
-  }
-
-  /** Insert ABSENT rows for enrolled students without a row. Returns true if any were inserted. */
-  private boolean fillAbsentees(AttendanceSession s) {
-    List<Student> enrolled = enrollmentRepo
-        .findActiveStudentsOnDate(s.getGroup().getId(), s.getSessionDate());
-    Set<Long> alreadyRow = studentAttendanceRepo.findBySessionId(s.getId())
-        .stream().map(a -> a.getStudent().getId()).collect(Collectors.toSet());
-
-    boolean any = false;
-    for (Student st : enrolled) {
-      if (!alreadyRow.contains(st.getId())) {
-        var a = new com.example.demo.models.StudentAttendance();
-        a.setSession(s);
-        a.setStudent(st);
-        a.setStatus(AttendanceMark.ABSENT);
-        a.setCheckedInAt(null);
-        studentAttendanceRepo.save(a);
-        any = true;
-      }
-    }
-    return any;
-  }
-
-  private AttendanceMark parseMark(String s) {
-    if (s == null) return AttendanceMark.ABSENT;
-    String x = s.trim().toUpperCase();
-    if ("PRESENT".equals(x) || "P".equals(x) || "CHECKED_IN".equals(x)) return AttendanceMark.PRESENT;
-    return AttendanceMark.ABSENT;
+      var m = s.getClass().getMethod("getFullName");
+      Object v = m.invoke(s);
+      if (v != null) return v.toString();
+    } catch (Exception ignored) {}
+    return String.valueOf(s);
   }
 }

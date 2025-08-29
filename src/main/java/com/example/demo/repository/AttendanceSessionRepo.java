@@ -1,28 +1,16 @@
+// src/main/java/com/example/demo/repository/AttendanceSessionRepo.java
 package com.example.demo.repository;
 
 import com.example.demo.models.AttendanceSession;
+import com.example.demo.models.GroupSchedule;
 import com.example.demo.models.StudyGroup;
-import com.example.demo.models.enums.SessionStatus;
-import org.springframework.data.jpa.repository.JpaRepository;
-
+import org.springframework.data.jpa.repository.*;
 import java.time.LocalDate;
-import java.time.LocalTime;
-import java.util.Collection;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
 
 public interface AttendanceSessionRepo extends JpaRepository<AttendanceSession, Long> {
-  Optional<AttendanceSession> findByGroupAndSessionDateAndStartTimeAndEndTime(
-      StudyGroup group, LocalDate date, LocalTime start, LocalTime end);
-  
+  Optional<AttendanceSession> findByGroupAndScheduleAndSessionDate(StudyGroup group, GroupSchedule schedule, LocalDate sessionDate);
 
-  List<AttendanceSession> findByStatusIn(List<SessionStatus> statuses);
-  List<AttendanceSession> findByGroupIdAndSessionDateBetween(Long groupId, LocalDate from, LocalDate to);
-
-  List<AttendanceSession> findByStatusIn(Collection<SessionStatus> statuses);
-  
-//list sessions by group & date range
- List<AttendanceSession> findByGroupIdAndSessionDateBetweenOrderBySessionDateAscStartTimeAsc(
-     Long groupId, LocalDate from, LocalDate to
- );
+  List<AttendanceSession> findByGroup_IdAndSessionDateBetweenOrderBySessionDateAsc(
+      Long groupId, LocalDate start, LocalDate endExclusive);
 }

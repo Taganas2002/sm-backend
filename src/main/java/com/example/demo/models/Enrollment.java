@@ -13,6 +13,12 @@ import java.util.Objects;
 public class Enrollment {
   @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
   private Long id;
+  
+//READ-ONLY: computed by MySQL from status
+ @Column(name = "active", insertable = false, updatable = false)
+ private boolean active;   // <-- remove "= true
+
+  
 
   @ManyToOne(fetch = FetchType.LAZY) @JoinColumn(name = "student_id", nullable = false)
   private Student student;
@@ -29,6 +35,8 @@ public class Enrollment {
   @Lob private String notes;
 
   public Long getId(){ return id; } public void setId(Long id){ this.id = id; }
+  public boolean isActive() { return active; }
+  public void setActive(boolean active) { this.active = active; }
   public Student getStudent(){ return student; } public void setStudent(Student student){ this.student = student; }
   public StudyGroup getGroup(){ return group; } public void setGroup(StudyGroup group){ this.group = group; }
   public LocalDate getEnrollmentDate(){ return enrollmentDate; } public void setEnrollmentDate(LocalDate v){ this.enrollmentDate = v; }

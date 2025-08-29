@@ -46,4 +46,7 @@ public interface EnrollmentRepo
   List<Enrollment> findByGroupIdAndStatusIn(Long groupId, Collection<EnrollmentStatus> statuses);
 
   List<Enrollment> findByStudentIdAndGroupId(Long studentId, Long groupId);
+  List<Enrollment> findByGroupIdAndActiveTrue(Long groupId);
+  List<Enrollment> findByGroup_Id(Long groupId);
+  
 }
