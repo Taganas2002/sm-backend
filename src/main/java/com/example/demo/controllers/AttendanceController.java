@@ -89,4 +89,16 @@ public class AttendanceController {
   public ResponseEntity<SessionResponse> summary(@PathVariable Long sessionId) {
     return ResponseEntity.ok(service.summary(sessionId));
   }
+  
+//2d) Toggle a student (checkbox) while session is OPEN
+@PostMapping("/teacher/mark")
+public ResponseEntity<SessionResponse> mark(
+   @RequestParam Long sessionId,
+   @RequestParam Long studentId,
+   @RequestParam boolean present,
+   @RequestParam(required=false) Integer tzOffsetMinutes
+) {
+ return ResponseEntity.ok(service.mark(sessionId, studentId, present, toOffset(tzOffsetMinutes)));
+}
+
 }
