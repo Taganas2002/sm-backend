@@ -1,5 +1,5 @@
 package com.example.demo.models.enums;
 
 public enum TeacherShareType {
-  PERCENT, PER_HOUR, PER_SESSION, NONE
+  PERCENT, FIXED_PER_SESSION, FIXED_PER_HOUR, NONE
 }

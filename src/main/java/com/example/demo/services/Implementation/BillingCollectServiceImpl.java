@@ -14,6 +14,7 @@ import com.example.demo.repository.ReceiptRepo;
 import com.example.demo.repository.StudentPaymentRepo;
 import com.example.demo.services.Interface.BillingCollectService;
 import com.example.demo.services.Implementation.*;
+import com.example.demo.services.Interface.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
@@ -35,18 +36,22 @@ public class BillingCollectServiceImpl implements BillingCollectService {
   private final StudentRepo studentRepo;
   private final StudyGroupRepo groupRepo;
   private final ReceiptNumberService receiptNumberService;
+  private final TeacherPayService teacherPayService;
 
-  public BillingCollectServiceImpl(ReceiptRepo receiptRepo,
-                                   StudentPaymentRepo paymentRepo,
-                                   StudentRepo studentRepo,
-                                   StudyGroupRepo groupRepo,
-                                   ReceiptNumberService receiptNumberService) {
-    this.receiptRepo = receiptRepo;
-    this.paymentRepo = paymentRepo;
-    this.studentRepo = studentRepo;
-    this.groupRepo = groupRepo;
-    this.receiptNumberService = receiptNumberService;
-  }
+//constructor
+public BillingCollectServiceImpl(ReceiptRepo receiptRepo,
+                                StudentPaymentRepo paymentRepo,
+                                StudentRepo studentRepo,
+                                StudyGroupRepo groupRepo,
+                                ReceiptNumberService receiptNumberService,
+                                TeacherPayService teacherPayService) {
+ this.receiptRepo = receiptRepo;
+ this.paymentRepo = paymentRepo;
+ this.studentRepo = studentRepo;
+ this.groupRepo = groupRepo;
+ this.receiptNumberService = receiptNumberService;
+ this.teacherPayService = teacherPayService;   // << add this
+}
 
   private static String up(String s){ return s==null? "" : s.trim().toUpperCase(); }
   private static BigDecimal z(BigDecimal v){ return v==null? BigDecimal.ZERO : v; }
@@ -135,6 +140,7 @@ public class BillingCollectServiceImpl implements BillingCollectService {
       sp.setBalance(due.subtract(z(it.getAmount()))); // 🔹 REQUIRED: stops NOT NULL error
       sp.setPaymentDate(r.getIssuedAt());
       paymentRepo.save(sp);
+      teacherPayService.accrueOnStudentPayment(sp);
 
       outLines.add(new ReceiptResponse.Line(
           g.getName(), up(it.getModel()), it.getPeriod(),
