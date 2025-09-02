@@ -1,3 +1,4 @@
+// src/main/java/.../security/WebSecurityConfig.java
 package com.example.demo.security;
 
 import org.springframework.context.annotation.Bean;
@@ -22,6 +23,7 @@ import com.example.demo.security.jwt.AuthEntryPointJwt;
 import com.example.demo.security.jwt.AuthTokenFilter;
 import com.example.demo.security.services.UserDetailsServiceImpl;
 
+import java.util.Arrays;
 import java.util.List;
 
 @Configuration
@@ -63,19 +65,13 @@ public class WebSecurityConfig {
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
             .csrf(csrf -> csrf.disable())
-            .cors(Customizer.withDefaults()) // <— enable CORS using bean below
+            .cors(Customizer.withDefaults())
             .exceptionHandling(ex -> ex.authenticationEntryPoint(unauthorizedHandler))
             .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
-                // Let browser preflight pass without auth
-                .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                // Public endpoints
-                .requestMatchers("/api/auth/**").permitAll()
-                .requestMatchers("/api/test/**").permitAll()
-                .requestMatchers("/api/health/**").permitAll()
-                // Public GET for uploads
+                .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()   // preflight
+                .requestMatchers("/api/auth/**", "/api/test/**", "/api/health/**").permitAll()
                 .requestMatchers(HttpMethod.GET, "/uploads/**").permitAll()
-                // Everything else requires JWT
                 .anyRequest().authenticated()
             );
 
@@ -87,13 +83,19 @@ public class WebSecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration cfg = new CorsConfiguration();
-        // dev origins (Vite)
         cfg.setAllowedOrigins(List.of("http://localhost:5173", "http://127.0.0.1:5173"));
         cfg.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        // allow Authorization header from browser
-        cfg.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Requested-With"));
-        cfg.setExposedHeaders(List.of("Authorization"));
-        // set to true only if you actually use cookies; not needed for pure Bearer tokens
+
+        // ✅ allow standard + custom header used by the FE
+        cfg.setAllowedHeaders(Arrays.asList(
+            "Authorization", "Content-Type", "X-Requested-With", "X-Cashier-UserId"
+        ));
+        // (or simply: cfg.setAllowedHeaders(List.of("*"));)
+
+        // Expose anything you want the browser to read back (optional)
+        cfg.setExposedHeaders(Arrays.asList("Authorization"));
+
+        // Using bearer tokens, not cookies
         cfg.setAllowCredentials(false);
 
         UrlBasedCorsConfigurationSource src = new UrlBasedCorsConfigurationSource();

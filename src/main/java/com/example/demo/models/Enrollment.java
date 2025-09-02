@@ -15,8 +15,9 @@ public class Enrollment {
   private Long id;
   
 //READ-ONLY: computed by MySQL from status
- @Column(name = "active", insertable = false, updatable = false)
- private boolean active;   // <-- remove "= true
+  @Column(name = "active", insertable = false, updatable = false)
+  private Boolean active;
+
 
   
 
@@ -36,7 +37,8 @@ public class Enrollment {
 
   public Long getId(){ return id; } public void setId(Long id){ this.id = id; }
   public boolean isActive() { return active; }
-  public void setActive(boolean active) { this.active = active; }
+  public Boolean getActive() { return active; }
+  public void setActive(Boolean active) { this.active = active; }
   public Student getStudent(){ return student; } public void setStudent(Student student){ this.student = student; }
   public StudyGroup getGroup(){ return group; } public void setGroup(StudyGroup group){ this.group = group; }
   public LocalDate getEnrollmentDate(){ return enrollmentDate; } public void setEnrollmentDate(LocalDate v){ this.enrollmentDate = v; }

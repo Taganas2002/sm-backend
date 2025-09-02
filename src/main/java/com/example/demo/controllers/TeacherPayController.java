@@ -9,7 +9,7 @@ import java.time.OffsetDateTime;
 import java.util.List;
 
 @RestController
-@RequestMapping("/billing/teacher")
+@RequestMapping("api/billing/teacher")
 public class TeacherPayController {
 
   private final TeacherPayService svc;

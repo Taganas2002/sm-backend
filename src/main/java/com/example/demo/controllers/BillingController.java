@@ -8,7 +8,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 
 @RestController
-@RequestMapping("/billing")
+@RequestMapping("api/billing")
 public class BillingController {
 
   private final BillingCollectService service;

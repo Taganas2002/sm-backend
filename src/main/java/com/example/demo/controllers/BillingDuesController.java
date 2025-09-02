@@ -6,7 +6,7 @@ import com.example.demo.services.Interface.BillingDuesService;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
-@RequestMapping("/billing/dues")
+@RequestMapping("api/billing/dues")
 public class BillingDuesController {
 
   private final BillingDuesService service;
