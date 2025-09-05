@@ -1,5 +1,8 @@
-// src/main/java/.../security/WebSecurityConfig.java
+// src/main/java/com/example/demo/security/WebSecurityConfig.java
 package com.example.demo.security;
+
+import java.util.Arrays;
+import java.util.List;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -23,83 +26,70 @@ import com.example.demo.security.jwt.AuthEntryPointJwt;
 import com.example.demo.security.jwt.AuthTokenFilter;
 import com.example.demo.security.services.UserDetailsServiceImpl;
 
-import java.util.Arrays;
-import java.util.List;
-
 @Configuration
-@EnableMethodSecurity
+@EnableMethodSecurity(prePostEnabled = true)
 public class WebSecurityConfig {
 
-    private final UserDetailsServiceImpl userDetailsService;
-    private final AuthEntryPointJwt unauthorizedHandler;
+  private final UserDetailsServiceImpl userDetailsService;
+  private final AuthEntryPointJwt unauthorizedHandler;
+  private final AuthTokenFilter authTokenFilter; // use Spring-managed filter
 
-    public WebSecurityConfig(UserDetailsServiceImpl userDetailsService, AuthEntryPointJwt unauthorizedHandler) {
-        this.userDetailsService = userDetailsService;
-        this.unauthorizedHandler = unauthorizedHandler;
-    }
+  public WebSecurityConfig(UserDetailsServiceImpl userDetailsService,
+                           AuthEntryPointJwt unauthorizedHandler,
+                           AuthTokenFilter authTokenFilter) {
+    this.userDetailsService = userDetailsService;
+    this.unauthorizedHandler = unauthorizedHandler;
+    this.authTokenFilter = authTokenFilter;
+  }
 
-    @Bean
-    public AuthTokenFilter authenticationJwtTokenFilter() {
-        return new AuthTokenFilter();
-    }
+  @Bean
+  public AuthenticationManager authenticationManager(AuthenticationConfiguration cfg) throws Exception {
+    return cfg.getAuthenticationManager();
+  }
 
-    @Bean
-    public AuthenticationManager authenticationManager(AuthenticationConfiguration authConfig) throws Exception {
-        return authConfig.getAuthenticationManager();
-    }
+  @Bean
+  public PasswordEncoder passwordEncoder() {
+    return new BCryptPasswordEncoder();
+  }
 
-    @Bean
-    public PasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder();
-    }
+  @Bean
+  public DaoAuthenticationProvider authenticationProvider() {
+    DaoAuthenticationProvider p = new DaoAuthenticationProvider();
+    p.setUserDetailsService(userDetailsService);
+    p.setPasswordEncoder(passwordEncoder());
+    return p;
+  }
 
-    @Bean
-    public DaoAuthenticationProvider authenticationProvider() {
-        DaoAuthenticationProvider authProvider = new DaoAuthenticationProvider();
-        authProvider.setUserDetailsService(userDetailsService);
-        authProvider.setPasswordEncoder(passwordEncoder());
-        return authProvider;
-    }
+  @Bean
+  public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    http
+      .csrf(csrf -> csrf.disable())
+      .cors(Customizer.withDefaults())
+      .exceptionHandling(ex -> ex.authenticationEntryPoint(unauthorizedHandler))
+      .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+      .authorizeHttpRequests(auth -> auth
+        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+        .requestMatchers("/api/auth/**", "/api/test/**", "/api/health/**").permitAll()
+        .requestMatchers(HttpMethod.GET, "/uploads/**").permitAll()
+        .anyRequest().authenticated()
+      );
 
-    @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
-        http
-            .csrf(csrf -> csrf.disable())
-            .cors(Customizer.withDefaults())
-            .exceptionHandling(ex -> ex.authenticationEntryPoint(unauthorizedHandler))
-            .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            .authorizeHttpRequests(auth -> auth
-                .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()   // preflight
-                .requestMatchers("/api/auth/**", "/api/test/**", "/api/health/**").permitAll()
-                .requestMatchers(HttpMethod.GET, "/uploads/**").permitAll()
-                .anyRequest().authenticated()
-            );
+    http.authenticationProvider(authenticationProvider());
+    http.addFilterBefore(authTokenFilter, UsernamePasswordAuthenticationFilter.class);
+    return http.build();
+  }
 
-        http.authenticationProvider(authenticationProvider());
-        http.addFilterBefore(authenticationJwtTokenFilter(), UsernamePasswordAuthenticationFilter.class);
-        return http.build();
-    }
+  @Bean
+  public CorsConfigurationSource corsConfigurationSource() {
+    CorsConfiguration cfg = new CorsConfiguration();
+    cfg.setAllowedOrigins(List.of("http://localhost:5173", "http://127.0.0.1:5173"));
+    cfg.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+    cfg.setAllowedHeaders(Arrays.asList("Authorization", "Content-Type", "X-Requested-With", "X-Cashier-UserId"));
+    cfg.setExposedHeaders(Arrays.asList("Authorization"));
+    cfg.setAllowCredentials(false);
 
-    @Bean
-    public CorsConfigurationSource corsConfigurationSource() {
-        CorsConfiguration cfg = new CorsConfiguration();
-        cfg.setAllowedOrigins(List.of("http://localhost:5173", "http://127.0.0.1:5173"));
-        cfg.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-
-        // ✅ allow standard + custom header used by the FE
-        cfg.setAllowedHeaders(Arrays.asList(
-            "Authorization", "Content-Type", "X-Requested-With", "X-Cashier-UserId"
-        ));
-        // (or simply: cfg.setAllowedHeaders(List.of("*"));)
-
-        // Expose anything you want the browser to read back (optional)
-        cfg.setExposedHeaders(Arrays.asList("Authorization"));
-
-        // Using bearer tokens, not cookies
-        cfg.setAllowCredentials(false);
-
-        UrlBasedCorsConfigurationSource src = new UrlBasedCorsConfigurationSource();
-        src.registerCorsConfiguration("/**", cfg);
-        return src;
-    }
+    UrlBasedCorsConfigurationSource src = new UrlBasedCorsConfigurationSource();
+    src.registerCorsConfiguration("/**", cfg);
+    return src;
+  }
 }

@@ -19,6 +19,9 @@ import org.springframework.web.bind.annotation.*;
 import java.util.*;
 import java.util.stream.Collectors;
 
+// import your TenantContext (adjust the package if different)
+import com.example.demo.security.TenantContext;
+
 @RestController
 @RequestMapping("/api/admin/accounts")
 public class AccountsAdminController {
@@ -27,6 +30,7 @@ public class AccountsAdminController {
   private final RoleRepository roleRepo;
   private final PermissionRepository permRepo;
   private final UserPermissionOverrideRepository overrideRepo;
+  private final SchoolMembershipRepository membershipRepo;
   private final AuthorityService authorityService;
   private final PasswordEncoder passwordEncoder;
 
@@ -34,12 +38,14 @@ public class AccountsAdminController {
                                  RoleRepository roleRepo,
                                  PermissionRepository permRepo,
                                  UserPermissionOverrideRepository overrideRepo,
+                                 SchoolMembershipRepository membershipRepo,
                                  AuthorityService authorityService,
                                  PasswordEncoder passwordEncoder) {
     this.userRepo = userRepo;
     this.roleRepo = roleRepo;
     this.permRepo = permRepo;
     this.overrideRepo = overrideRepo;
+    this.membershipRepo = membershipRepo;
     this.authorityService = authorityService;
     this.passwordEncoder = passwordEncoder;
   }
@@ -47,10 +53,12 @@ public class AccountsAdminController {
   @GetMapping
   @PreAuthorize("hasRole('ADMIN') or hasAuthority('API:ACCOUNTS_READ')")
   public ResponseEntity<?> list(@RequestParam(required = false) String search,
-                                @RequestParam(required = false) Long roleId,   // ✅ use Long
+                                @RequestParam(required = false) Long roleId,
                                 @RequestParam(defaultValue = "0") int page,
                                 @RequestParam(defaultValue = "20") int size) {
+    Long schoolId = TenantContext.requireSchoolId(); // already in your code
     Pageable pageable = PageRequest.of(Math.max(page, 0), Math.min(size, 200), Sort.by(Sort.Direction.DESC, "id"));
+    // Use your existing repository method here (unchanged)
     Page<User> p = userRepo.searchAccounts(search, roleId, pageable);
     var content = p.getContent().stream().map(this::toSummary).toList();
     return ResponseEntity.ok(Map.of(
@@ -72,9 +80,20 @@ public class AccountsAdminController {
   public ResponseEntity<?> snapshot(@PathVariable Long userId,
                                     @RequestParam(defaultValue = "true") boolean includeBaseline) {
     var u = userRepo.findById(userId).orElseThrow();
-    List<String> baseline = includeBaseline
-        ? permRepo.findAllForUserViaRoles(userId).stream().map(Permission::getCode).toList()
-        : Collections.emptyList();
+
+    List<String> baseline = Collections.emptyList();
+    if (includeBaseline) {
+      Long schoolId = TenantContext.requireSchoolId();
+      var membership = membershipRepo.findActiveByUserIdAndSchoolId(userId, schoolId).orElse(null);
+      if (membership != null) {
+        baseline = permRepo.findAllForRole(membership.getRole()).stream()
+            .map(Permission::getCode).toList();
+      } else {
+        // fallback to global baseline
+        baseline = permRepo.findAllForUserViaRoles(userId).stream()
+            .map(Permission::getCode).toList();
+      }
+    }
 
     var overrides = overrideRepo.findByUserId(userId).stream()
         .map(o -> new PermissionsSnapshotDto.OverrideItem(o.getPermission().getCode(), o.getEffect().name()))
@@ -99,22 +118,33 @@ public class AccountsAdminController {
     var user = userRepo.findById(userId).orElseThrow();
 
     if (req.getRoleId() != null) {
-    	  var role = roleRepo.findById(Long.valueOf(req.getRoleId())).orElseThrow();
-    	  user.setRoles(Set.of(role));
-    	  userRepo.save(user);
-    	}
+      var role = roleRepo.findById(Long.valueOf(req.getRoleId())).orElseThrow();
+      user.setRoles(Set.of(role));
+      userRepo.save(user);
+    }
 
+    Long schoolId = TenantContext.requireSchoolId();
+    var membership = membershipRepo.findActiveByUserIdAndSchoolId(user.getId(), schoolId).orElse(null);
 
-    Set<String> baselineMenu = permRepo.findAllForUserViaRoles(userId).stream()
-        .map(Permission::getCode)
-        .filter(c -> c.startsWith("MENU:"))
-        .collect(Collectors.toSet());
+    Set<String> baselineMenu;
+    if (membership != null) {
+      baselineMenu = permRepo.findAllForRole(membership.getRole()).stream()
+          .map(Permission::getCode)
+          .filter(c -> c.startsWith("MENU:"))
+          .collect(Collectors.toCollection(LinkedHashSet::new));
+    } else {
+      baselineMenu = permRepo.findAllForUserViaRoles(user.getId()).stream()
+          .map(Permission::getCode)
+          .filter(c -> c.startsWith("MENU:"))
+          .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
 
     if (req.getMenuSelections() != null) {
       for (var sel : req.getMenuSelections()) {
         String code = sel.getCode();
         boolean want = sel.isChecked();
-        Permission p = permRepo.findByCode(code).orElseThrow(() -> new RuntimeException("Unknown permission: " + code));
+        Permission p = permRepo.findByCode(code)
+            .orElseThrow(() -> new RuntimeException("Unknown permission: " + code));
         boolean base = baselineMenu.contains(code);
         var existing = overrideRepo.findByUserIdAndPermissionId(user.getId(), p.getId());
 
@@ -149,23 +179,36 @@ public class AccountsAdminController {
     if (req.getPhone() != null && userRepo.existsByPhone(req.getPhone()))
       return ResponseEntity.badRequest().body(Map.of("error", "Phone already in use"));
 
-    User u = new User(req.getName(), req.getEmail(), req.getPhone(), passwordEncoder.encode(req.getPassword()));
+    User u = new User(req.getName(), req.getEmail(), req.getPhone(),
+                      passwordEncoder.encode(req.getPassword()));
     if (req.getRoleId() != null) {
-        var role = roleRepo.findById(Long.valueOf(req.getRoleId()))
-                           .orElseThrow();
-        u.setRoles(Set.of(role));
+      var role = roleRepo.findById(Long.valueOf(req.getRoleId())).orElseThrow();
+      u.setRoles(Set.of(role));
     }
     u = userRepo.save(u);
 
-    if (req.getInitialMenuSelections() != null) {
-      Set<String> baselineMenu = permRepo.findAllForUserViaRoles(u.getId()).stream()
+    Long schoolId = TenantContext.requireSchoolId();
+    var membership = membershipRepo.findActiveByUserIdAndSchoolId(u.getId(), schoolId).orElse(null);
+
+    Set<String> baselineMenu;
+    if (membership != null) {
+      baselineMenu = permRepo.findAllForRole(membership.getRole()).stream()
           .map(Permission::getCode)
           .filter(c -> c.startsWith("MENU:"))
-          .collect(Collectors.toSet());
+          .collect(Collectors.toCollection(LinkedHashSet::new));
+    } else {
+      baselineMenu = permRepo.findAllForUserViaRoles(u.getId()).stream()
+          .map(Permission::getCode)
+          .filter(c -> c.startsWith("MENU:"))
+          .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    if (req.getInitialMenuSelections() != null) {
       for (var sel : req.getInitialMenuSelections()) {
         String code = sel.getCode();
         boolean want = sel.isChecked();
-        Permission p = permRepo.findByCode(code).orElseThrow(() -> new RuntimeException("Unknown permission: " + code));
+        Permission p = permRepo.findByCode(code)
+            .orElseThrow(() -> new RuntimeException("Unknown permission: " + code));
         boolean base = baselineMenu.contains(code);
         if (base && !want) {
           var ov = new UserPermissionOverride();

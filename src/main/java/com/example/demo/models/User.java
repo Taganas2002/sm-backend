@@ -22,6 +22,12 @@ public class User {
   @NotBlank
   @Size(max = 20)
   private String username;
+  
+  @Column(name = "email_verified", nullable = false)
+  private boolean emailVerified = false;
+  
+  @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, orphanRemoval = true)
+  private java.util.Set<SchoolMembership> memberships = new java.util.HashSet<>();
 
   @NotBlank
   @Size(max = 50)
@@ -130,4 +136,8 @@ public class User {
   public void setFailedPinAttempts(int failedPinAttempts) {
     this.failedPinAttempts = failedPinAttempts;
   }
+  public boolean isEmailVerified() { return emailVerified; }
+  public void setEmailVerified(boolean emailVerified) { this.emailVerified = emailVerified; }
+  public java.util.Set<SchoolMembership> getMemberships() { return memberships; }
+  public void setMemberships(java.util.Set<SchoolMembership> memberships) { this.memberships = memberships; }
 }
