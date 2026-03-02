@@ -2,6 +2,10 @@
 
 A desktop school management system for managing students, teachers, classes, timetables, attendance, registration, appointments, and school finances — built for real-world school operations with offline support.
 
+## Repositories
+- Frontend (React + Electron): https://github.com/Taganas2002/sm-frontend
+- Backend (Spring Boot): https://github.com/Taganas2002/sm-backend
+
 ## What it does
 MMS helps a school:
 - Manage student and teacher records
